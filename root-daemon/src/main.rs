@@ -6,13 +6,18 @@ struct State {
     last_mode: String,
     last_active: Instant,
     cpu_prev: Vec<(u64, u64)>,
+
+    // burst detection
+    last_freq: f32,
+    last_usage: f32,
+    stable_count: u8,
 }
 
 // -----------------------------
-// MAX CORE FREQ
+// TOP-CORE AVERAGE FREQ (FIXED)
 // -----------------------------
-fn max_core_freq_ratio() -> f32 {
-    let mut max_ratio = 0.0;
+fn effective_core_freq_ratio() -> f32 {
+    let mut ratios: Vec<f32> = Vec::new();
 
     if let Ok(entries) = fs::read_dir("/sys/devices/system/cpu") {
         for e in entries.flatten() {
@@ -28,17 +33,25 @@ fn max_core_freq_ratio() -> f32 {
                     m.trim().parse::<f32>(),
                 ) {
                     if mn > 0.0 {
-                        let ratio = cn / mn;
-                        if ratio > max_ratio {
-                            max_ratio = ratio;
-                        }
+                        ratios.push(cn / mn);
                     }
                 }
             }
         }
     }
 
-    max_ratio
+    if ratios.is_empty() {
+        return 0.0;
+    }
+
+    // sort descending
+    ratios.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+    // take top 2 cores (or 1 if single-core read)
+    let count = ratios.len().min(2);
+    let sum: f32 = ratios.iter().take(count).sum();
+
+    sum / count as f32
 }
 
 // -----------------------------
@@ -163,8 +176,47 @@ fn write_epp(value: &str) {
 }
 
 // -----------------------------
+// BURST DETECTION (FIXED)
+// -----------------------------
+fn detect_burst(
+    usage: f32,
+    freq: f32,
+    gpu: bool,
+    state: &mut State,
+) -> bool {
+    let freq_delta = freq - state.last_freq;
+    let usage_delta = usage - state.last_usage;
+
+    let strong_signal =
+        usage > 0.65 &&
+        freq > 0.75 &&
+        freq_delta > 0.05;
+
+    let medium_signal =
+        usage > 0.50 &&
+        freq > 0.65 &&
+        usage_delta > 0.05;
+
+    let gpu_signal =
+        gpu && usage > 0.40;
+
+    let signal = strong_signal || medium_signal || gpu_signal;
+
+    if signal {
+        state.stable_count += 1;
+    } else {
+        state.stable_count = 0;
+    }
+
+    state.last_freq = freq;
+    state.last_usage = usage;
+
+    state.stable_count >= 2
+}
+
+// -----------------------------
 fn decide_mode(state: &mut State) -> String {
-    let freq = max_core_freq_ratio();
+    let freq = effective_core_freq_ratio(); // FIXED
     let usage = max_core_usage(&mut state.cpu_prev);
     let gpu = gpu_busy();
     let idle = any_user_idle();
@@ -173,10 +225,7 @@ fn decide_mode(state: &mut State) -> String {
 
     let now = Instant::now();
 
-    let strong = usage > 0.80 || freq > 0.90;
-    let medium = (usage > 0.50 && freq > 0.70) || (gpu && freq > 0.60);
-
-    let active = strong || medium;
+    let active = detect_burst(usage, freq, gpu, state);
 
     if active {
         state.last_active = now;
@@ -228,6 +277,10 @@ async fn main() -> anyhow::Result<()> {
         last_mode: String::new(),
         last_active: Instant::now(),
         cpu_prev: Vec::new(),
+
+        last_freq: 0.0,
+        last_usage: 0.0,
+        stable_count: 0,
     };
 
     loop {
