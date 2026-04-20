@@ -257,50 +257,6 @@ PRIORITY=100
 sudo systemctl restart zramswap
 ```
 
----
-
-## ⚡ Boot Optimization (BIG WIN ⚡)
-
-Inspired by: https://github.com/jith/ubuntu-tuned
-
-### Analyze boot time
-
-```bash
-systemd-analyze blame
-```
-
----
-
-### Disable unused services
-
-```bash
-sudo systemctl disable bluetooth
-sudo systemctl disable cups
-sudo systemctl disable ModemManager
-```
-
----
-
-### Reduce shutdown delay
-
-```bash
-sudo nano /etc/systemd/system.conf
-```
-
-```
-DefaultTimeoutStopSec=5s
-```
-
----
-
-### Optional: disable snapd
-
-```bash
-sudo systemctl disable snapd
-```
-
----
-
 ## ⚡ Performance Comparison
 
 | System           | Performance | Efficiency |
@@ -345,15 +301,3 @@ sudo systemctl disable snapd
 ✔ Better efficiency than stock Linux
 ✔ Full control over tuning
 ```
-
----
-
-## ⭐ Contributing
-
-Pull requests are welcome. Ideas and tuning improvements are encouraged.
-
----
-
-## 📜 License
-
-MIT
