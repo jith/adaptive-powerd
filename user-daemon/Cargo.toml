@@ -1,0 +1,9 @@
+[package]
+name = "adaptive-powerd-user"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+zbus = "3"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
