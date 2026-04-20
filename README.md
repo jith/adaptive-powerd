@@ -1,6 +1,6 @@
 🚀 adaptive-powerd
 
-Mac-like intelligent power management for Linux (Ryzen / AMD optimized)
+Intelligent power management for Linux (Ryzen / AMD optimized)
 
 🧠 Overview
 
@@ -100,7 +100,7 @@ CLI / AI	performance
 After work	instant drop
 🔋 Memory Optimization (zswap + zram)
 
-ubuntu-tuned
+Inspired by ubuntu-tuned
 
 🧠 Why
 ✔ Reduce swap I/O
@@ -139,11 +139,10 @@ sudo nano /etc/systemd/system.conf
 DefaultTimeoutStopSec=5s
 Optional: disable snapd
 sudo systemctl disable snapd
-⚡ Performance vs Stock vs Mac
+⚡ Performance vs Stock
 System	Performance	Efficiency
 Stock Linux	medium	medium
 adaptive-powerd	🔥 high	🔥 high
-MacBook Air	highest	highest
 📊 Expected Gains
 ✔ Faster app launch
 ✔ Better CLI responsiveness
@@ -163,6 +162,5 @@ Adaptive threshold learning
 🏁 Final
 You now have:
 ✔ A custom Linux power scheduler
-✔ Mac-like responsiveness
 ✔ Better efficiency than stock Linux
 ✔ Full control over tuning
