@@ -285,14 +285,6 @@ sudo systemctl restart zramswap
 
 ---
 
-## 🚀 Future Improvements
-
-- Per-core type awareness (Zen5 vs Zen5c)  
-- AI workload detection (ollama-specific)  
-- Adaptive threshold learning  
-
----
-
 ## 🏁 Final
 
 ```
