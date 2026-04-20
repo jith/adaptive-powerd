@@ -1,0 +1,11 @@
+[Unit]
+Description=Adaptive Power Root Daemon
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/adaptive-powerd-root
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
