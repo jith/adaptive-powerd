@@ -4,54 +4,42 @@ use std::time::{Duration, Instant};
 // -----------------------------
 struct State {
     last_mode: String,
-    last_active: Instant,
+    last_switch: Instant,
     cpu_prev: Vec<(u64, u64)>,
 
-    // burst detection
     last_freq: f32,
     last_usage: f32,
-    stable_count: u8,
 }
 
 // -----------------------------
-// TOP-CORE AVERAGE FREQ (FIXED)
+// MAX CORE FREQ
 // -----------------------------
 fn effective_core_freq_ratio() -> f32 {
-    let mut ratios: Vec<f32> = Vec::new();
+    let mut max_ratio = 0.0;
 
     if let Ok(entries) = fs::read_dir("/sys/devices/system/cpu") {
         for e in entries.flatten() {
             let cur = e.path().join("cpufreq/scaling_cur_freq");
             let max = e.path().join("cpufreq/cpuinfo_max_freq");
 
-            if let (Ok(c), Ok(m)) = (
-                fs::read_to_string(cur),
-                fs::read_to_string(max),
-            ) {
-                if let (Ok(cn), Ok(mn)) = (
-                    c.trim().parse::<f32>(),
-                    m.trim().parse::<f32>(),
-                ) {
+            if let (Ok(c), Ok(m)) =
+                (fs::read_to_string(cur), fs::read_to_string(max))
+            {
+                if let (Ok(cn), Ok(mn)) =
+                    (c.trim().parse::<f32>(), m.trim().parse::<f32>())
+                {
                     if mn > 0.0 {
-                        ratios.push(cn / mn);
+                        let ratio = cn / mn;
+                        if ratio > max_ratio {
+                            max_ratio = ratio;
+                        }
                     }
                 }
             }
         }
     }
 
-    if ratios.is_empty() {
-        return 0.0;
-    }
-
-    // sort descending
-    ratios.sort_by(|a, b| b.partial_cmp(a).unwrap());
-
-    // take top 2 cores (or 1 if single-core read)
-    let count = ratios.len().min(2);
-    let sum: f32 = ratios.iter().take(count).sum();
-
-    sum / count as f32
+    max_ratio
 }
 
 // -----------------------------
@@ -104,13 +92,15 @@ fn max_core_usage(prev: &mut Vec<(u64, u64)>) -> f32 {
 }
 
 // -----------------------------
+// GPU BUSY
+// -----------------------------
 fn gpu_busy() -> bool {
     if let Ok(entries) = fs::read_dir("/sys/class/drm") {
         for e in entries.flatten() {
             let p = e.path().join("device/gpu_busy_percent");
             if let Ok(v) = fs::read_to_string(p) {
                 if let Ok(n) = v.trim().parse::<u64>() {
-                    return n > 25;
+                    return n > 10;
                 }
             }
         }
@@ -119,18 +109,26 @@ fn gpu_busy() -> bool {
 }
 
 // -----------------------------
-fn any_user_idle() -> bool {
+// IDLE DETECTION (FIXED)
+// -----------------------------
+fn all_users_idle() -> bool {
+    let mut found = false;
+
     if let Ok(entries) = fs::read_dir("/run/user") {
         for e in entries.flatten() {
             let path = e.path().join("adaptive-powerd.state");
+
             if let Ok(content) = fs::read_to_string(path) {
-                if content.contains("idle=true") {
-                    return true;
+                found = true;
+
+                if content.contains("idle=false") {
+                    return false;
                 }
             }
         }
     }
-    false
+
+    found
 }
 
 // -----------------------------
@@ -151,21 +149,6 @@ fn read_temp_c() -> u64 {
 }
 
 // -----------------------------
-fn on_ac() -> bool {
-    if let Ok(entries) = fs::read_dir("/sys/class/power_supply") {
-        for e in entries.flatten() {
-            let p = e.path().join("online");
-            if let Ok(v) = fs::read_to_string(p) {
-                if v.trim() == "1" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-// -----------------------------
 fn write_epp(value: &str) {
     if let Ok(entries) = fs::read_dir("/sys/devices/system/cpu") {
         for e in entries.flatten() {
@@ -176,81 +159,67 @@ fn write_epp(value: &str) {
 }
 
 // -----------------------------
-// BURST DETECTION (FIXED)
+// GPU MODE CONTROL
 // -----------------------------
-fn detect_burst(
+fn write_gpu_mode(mode: &str) {
+    let value = match mode {
+        "performance" => "high",
+        "power" => "low",
+        _ => "auto",
+    };
+
+    if let Ok(entries) = fs::read_dir("/sys/class/drm") {
+        for e in entries.flatten() {
+            let path =
+                e.path().join("device/power_dpm_force_performance_level");
+
+            if path.exists() {
+                let _ = fs::write(path, value);
+            }
+        }
+    }
+}
+
+// -----------------------------
+// DYNAMIC SCORING ENGINE
+// -----------------------------
+fn compute_score(
     usage: f32,
     freq: f32,
     gpu: bool,
     state: &mut State,
-) -> bool {
-    let freq_delta = freq - state.last_freq;
-    let usage_delta = usage - state.last_usage;
+) -> f32 {
+    let freq_delta = (freq - state.last_freq).max(0.0);
+    let usage_delta = (usage - state.last_usage).max(0.0);
 
-    let strong_signal =
-        usage > 0.65 &&
-        freq > 0.75 &&
-        freq_delta > 0.05;
+    let delta = (freq_delta + usage_delta) / 2.0;
 
-    let medium_signal =
-        usage > 0.50 &&
-        freq > 0.65 &&
-        usage_delta > 0.05;
+    let gpu_boost = if gpu { 0.1 } else { 0.0 };
 
-    let gpu_signal =
-        gpu && usage > 0.40;
-
-    let signal = strong_signal || medium_signal || gpu_signal;
-
-    if signal {
-        state.stable_count += 1;
-    } else {
-        state.stable_count = 0;
-    }
+    let score = usage * 0.5 + freq * 0.3 + delta * 0.2 + gpu_boost;
 
     state.last_freq = freq;
     state.last_usage = usage;
 
-    state.stable_count >= 2
+    score.min(1.0)
 }
 
 // -----------------------------
 fn decide_mode(state: &mut State) -> String {
-    let freq = effective_core_freq_ratio(); // FIXED
+    let freq = effective_core_freq_ratio();
     let usage = max_core_usage(&mut state.cpu_prev);
     let gpu = gpu_busy();
-    let idle = any_user_idle();
+    let idle = all_users_idle();
     let temp = read_temp_c();
-    let ac = on_ac();
 
-    let now = Instant::now();
+    let score = compute_score(usage, freq, gpu, state);
 
-    let active = detect_burst(usage, freq, gpu, state);
-
-    if active {
-        state.last_active = now;
-    }
-
-    let recently_active =
-        now.duration_since(state.last_active) < Duration::from_millis(400);
-
-    if temp > 85 {
+    // thermal override
+    if temp > 92 {
         return "power".into();
-    } else if temp > 75 {
-        return "balance_performance".into();
-    }
-
-    if ac {
-        if recently_active {
-            return "performance".into();
-        }
-        if idle {
-            return "power".into();
-        }
+    } else if temp > 85 {
         return "balance_power".into();
-    }
-
-    if recently_active {
+    } else if temp > 75 {
         return "balance_performance".into();
     }
 
@@ -258,15 +227,35 @@ fn decide_mode(state: &mut State) -> String {
         return "power".into();
     }
 
-    "balance_power".into()
+    // dynamic mapping
+    if score > 0.80 {
+        "performance".into()
+    } else if score > 0.60 {
+        "balance_performance".into()
+    } else if score > 0.30 {
+        "balance_power".into()
+    } else {
+        "power".into()
+    }
 }
 
 // -----------------------------
 fn rebalance(state: &mut State) {
+    let now = Instant::now();
     let mode = decide_mode(state);
+
+    // stickiness
+    if now.duration_since(state.last_switch)
+        < Duration::from_millis(300)
+    {
+        return;
+    }
+
     if mode != state.last_mode {
         write_epp(&mode);
+        write_gpu_mode(&mode);
         state.last_mode = mode;
+        state.last_switch = now;
     }
 }
 
@@ -275,12 +264,10 @@ fn rebalance(state: &mut State) {
 async fn main() -> anyhow::Result<()> {
     let mut state = State {
         last_mode: String::new(),
-        last_active: Instant::now(),
+        last_switch: Instant::now(),
         cpu_prev: Vec::new(),
-
         last_freq: 0.0,
         last_usage: 0.0,
-        stable_count: 0,
     };
 
     loop {
