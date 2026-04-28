@@ -1,0 +1,68 @@
+# =========================
+# Rust / Cargo
+# =========================
+
+/target/
+**/target/
+
+# Cargo lock (keep for binaries, ignore for libraries if needed)
+# Uncomment next line ONLY if this is a library crate
+# Cargo.lock
+
+# =========================
+# Build artifacts
+# =========================
+
+*.rlib
+*.rmeta
+
+# =========================
+# Logs / runtime files
+# =========================
+
+*.log
+*.out
+*.pid
+
+# =========================
+# OS files
+# =========================
+
+.DS_Store
+Thumbs.db
+
+# =========================
+# Editor / IDE
+# =========================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =========================
+# Environment / temp
+# =========================
+
+.env
+.env.*
+tmp/
+temp/
+
+# =========================
+# Systemd / local runtime
+# =========================
+
+*.service.local
+*.desktop.local
+
+# Ignore runtime state files (important for your daemon)
+adaptive-powerd.state
+
+# =========================
+# DebugFS / test outputs
+# =========================
+
+debug/
+output/
