@@ -9,7 +9,7 @@ use tokio::time::sleep;
 // =============================
 
 const LOOP_INTERVAL: Duration = Duration::from_millis(400);
-const MIN_MODE_HOLD: Duration = Duration::from_secs(2);
+const CONFIRM_DELAY: Duration = Duration::from_millis(1200);
 
 // =============================
 // CPU MODES
@@ -76,7 +76,9 @@ struct Telemetry {
 struct State {
     cpu_mode: CpuMode,
     gpu_mode: GpuMode,
-    last_switch: Instant,
+
+    pending_cpu: Option<(CpuMode, Instant)>,
+    pending_gpu: Option<(GpuMode, Instant)>,
 
     cpu_prev: Vec<(u64, u64)>,
 
@@ -290,7 +292,7 @@ fn read_gpu_activity() -> Option<GpuActivity> {
 }
 
 // =============================
-// WRITE FUNCTIONS
+// WRITE
 // =============================
 
 fn write_epp(value: &str) {
@@ -312,7 +314,7 @@ fn write_gpu_mode(mode: &str) {
 }
 
 // =============================
-// CPU DECISION
+// DECISION (CPU)
 // =============================
 
 fn decide_cpu_mode(state: &mut State, t: &Telemetry) -> CpuMode {
@@ -358,38 +360,89 @@ fn decide_cpu_mode(state: &mut State, t: &Telemetry) -> CpuMode {
 }
 
 // =============================
-// GPU DECISION (FIXED)
+// DECISION (GPU)
 // =============================
 
 fn decide_gpu_mode(t: &Telemetry) -> GpuMode {
-    // Strong idle
     if t.idle {
         return GpuMode::Low;
     }
 
     if let Some(g) = &t.gpu {
-        // Video playback
         if g.vcn_active && g.vcn_load > 15 {
             return GpuMode::Auto;
         }
 
-        // GPU load
         if g.gfx_load > 20 {
             return GpuMode::Auto;
         }
 
-        // 🔥 FIX: low activity detection
-        if g.gfx_load < 5 && t.cpu_usage < 0.25 {
+        if g.gfx_load < 3 && t.cpu_usage < 0.25 {
             return GpuMode::Low;
         }
     }
 
-    // Battery bias
     if !t.ac {
         return GpuMode::Low;
     }
 
     GpuMode::Auto
+}
+
+// =============================
+// APPLY (STABLE)
+// =============================
+
+fn update_cpu_mode(state: &mut State, new_mode: CpuMode) {
+    if new_mode == state.cpu_mode {
+        state.pending_cpu = None;
+        return;
+    }
+
+    let now = Instant::now();
+
+    match state.pending_cpu {
+        Some((pending, start)) if pending == new_mode => {
+            if now.duration_since(start) >= CONFIRM_DELAY {
+                write_epp(new_mode.as_epp());
+                state.cpu_mode = new_mode;
+                state.pending_cpu = None;
+
+                println!("CPU → {:?}", new_mode);
+            }
+        }
+        _ => {
+            state.pending_cpu = Some((new_mode, now));
+        }
+    }
+}
+
+fn update_gpu_mode(state: &mut State, new_mode: GpuMode) {
+    if new_mode == state.gpu_mode {
+        state.pending_gpu = None;
+        return;
+    }
+
+    let now = Instant::now();
+
+    match state.pending_gpu {
+        Some((pending, start)) if pending == new_mode => {
+            if now.duration_since(start) >= CONFIRM_DELAY {
+                match new_mode {
+                    GpuMode::Low => write_gpu_mode("low"),
+                    GpuMode::Auto => write_gpu_mode("auto"),
+                }
+
+                state.gpu_mode = new_mode;
+                state.pending_gpu = None;
+
+                println!("GPU → {:?}", new_mode);
+            }
+        }
+        _ => {
+            state.pending_gpu = Some((new_mode, now));
+        }
+    }
 }
 
 // =============================
@@ -401,7 +454,8 @@ async fn main() -> anyhow::Result<()> {
     let mut state = State {
         cpu_mode: CpuMode::BalancePower,
         gpu_mode: GpuMode::Auto,
-        last_switch: Instant::now(),
+        pending_cpu: None,
+        pending_gpu: None,
         cpu_prev: vec![],
         usage_smooth: 0.0,
         freq_smooth: 0.0,
@@ -418,32 +472,11 @@ async fn main() -> anyhow::Result<()> {
             gpu: read_gpu_activity(),
         };
 
-        let cpu_mode = decide_cpu_mode(&mut state, &telemetry);
-        let gpu_mode = decide_gpu_mode(&telemetry);
+        let cpu_target = decide_cpu_mode(&mut state, &telemetry);
+        let gpu_target = decide_gpu_mode(&telemetry);
 
-        let now = Instant::now();
-
-        if now.duration_since(state.last_switch) >= MIN_MODE_HOLD {
-            if cpu_mode != state.cpu_mode {
-                write_epp(cpu_mode.as_epp());
-                state.cpu_mode = cpu_mode;
-            }
-
-            if gpu_mode != state.gpu_mode {
-                match gpu_mode {
-                    GpuMode::Low => write_gpu_mode("low"),
-                    GpuMode::Auto => write_gpu_mode("auto"),
-                }
-                state.gpu_mode = gpu_mode;
-            }
-
-            println!(
-                "CPU → {:?} | GPU → {:?} | idle {} | cpu {:.2}",
-                cpu_mode, gpu_mode, telemetry.idle, telemetry.cpu_usage
-            );
-
-            state.last_switch = now;
-        }
+        update_cpu_mode(&mut state, cpu_target);
+        update_gpu_mode(&mut state, gpu_target);
 
         sleep(LOOP_INTERVAL).await;
     }
